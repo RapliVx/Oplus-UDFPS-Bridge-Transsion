@@ -1,0 +1,142 @@
+use std::fs::{File, OpenOptions};
+use std::io;
+use parking_lot::Mutex;
+use crate::{log_error, log_info, log_warn};
+
+const HBM_PRIMARY: &str = "/sys/devices/platform/soc/14013000.dsi/lcm_hbm_state";
+const OPLUS_DISPLAY_DIR: &str = "/data/addon/oplus_display";
+const OPLUS_DISPLAY_HBM: &str = "/data/addon/oplus_display/hbm";
+
+const HBM_CANDIDATES: &[&str] = &[
+    "/sys/devices/platform/soc/14013000.dsi/lcm_hbm_state", // MT6789 / Helio G99 / Dimensity
+    "/sys/kernel/tran_display/lcm_hbm_state",
+    "/sys/devices/platform/soc/14000000.dispsys_config/lcm_hbm_state",
+    "/sys/class/drm/card0-DSI-1/hbm",
+];
+
+
+pub struct HbmController {
+    active_path: Option<String>,
+    hbm_file: Option<File>,
+    is_enabled: bool,
+}
+
+static GLOBAL_HBM: Mutex<Option<HbmController>> = Mutex::new(None);
+
+impl HbmController {
+    pub fn new() -> Self {
+        let mut ctrl = Self {
+            active_path: None,
+            hbm_file: None,
+            is_enabled: false,
+        };
+        ctrl.init();
+        ctrl
+    }
+
+    fn init(&mut self) {
+        if self.hbm_file.is_some() {
+            return;
+        }
+
+        // 1. Check known candidates
+        for &path in HBM_CANDIDATES {
+            if std::path::Path::new(path).exists() {
+                log_info!("Found LCM HBM control node at {}", path);
+                self.active_path = Some(path.to_string());
+                self.hbm_file = OpenOptions::new().read(true).write(true).open(path).ok();
+                return;
+            }
+        }
+
+        // 2. Dynamic platform soc search
+        if let Ok(dir) = std::fs::read_dir("/sys/devices/platform/soc") {
+            for entry in dir.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                if name.contains(".dsi") {
+                    let path = format!("/sys/devices/platform/soc/{}/lcm_hbm_state", name);
+                    if std::path::Path::new(&path).exists() {
+                        log_info!("Discovered LCM HBM node at {}", path);
+                        self.active_path = Some(path.clone());
+                        self.hbm_file = OpenOptions::new().read(true).write(true).open(&path).ok();
+                        return;
+                    }
+                }
+            }
+        }
+
+        log_error!("No LCM HBM node found!");
+    }
+
+    pub fn write_hbm(&mut self, enabled: bool) -> io::Result<()> {
+        let _ = self.write_hbm_sync(enabled, if enabled { 500 } else { 0 });
+        Ok(())
+    }
+
+    pub fn write_hbm_sync(&mut self, enabled: bool, max_wait_ms: u64) -> bool {
+        let path = self.active_path.as_deref().unwrap_or(HBM_PRIMARY);
+
+        if enabled {
+            let _ = std::fs::create_dir_all(OPLUS_DISPLAY_DIR);
+            let _ = std::fs::write(OPLUS_DISPLAY_HBM, b"1\n");
+
+            let effective_timeout_ms = max_wait_ms.max(500);
+            let start = std::time::Instant::now();
+            let timeout = std::time::Duration::from_millis(effective_timeout_ms);
+            let mut attempts = 0;
+
+            loop {
+                attempts += 1;
+                let _ = std::fs::write(path, b"1\n");
+
+                if let Ok(status) = std::fs::read_to_string(path) {
+                    if status.contains("0xOK") {
+                        self.is_enabled = true;
+                        log_info!(
+                            "Hardware LCM HBM confirmed active (0xOK) in {:?} (attempts={})",
+                            start.elapsed(),
+                            attempts
+                        );
+                        return true;
+                    }
+                }
+
+                if start.elapsed() >= timeout {
+                    log_warn!(
+                        "Hardware LCM HBM write timed out waiting for 0xOK after {:?} (attempts={})",
+                        start.elapsed(),
+                        attempts
+                    );
+                    break;
+                }
+
+                std::thread::sleep(std::time::Duration::from_millis(20));
+            }
+
+            self.is_enabled = true;
+            false
+        } else {
+            self.is_enabled = false;
+            let _ = std::fs::write(OPLUS_DISPLAY_HBM, b"0\n");
+            let _ = std::fs::write(path, b"0\n");
+            log_info!("Hardware LCM HBM disabled");
+            true
+        }
+    }
+}
+
+pub fn set_hbm(enabled: bool) -> bool {
+    set_hbm_sync(enabled, if enabled { 500 } else { 0 })
+}
+
+pub fn set_hbm_sync(enabled: bool, max_wait_ms: u64) -> bool {
+    let mut lock = GLOBAL_HBM.lock();
+    if lock.is_none() {
+        *lock = Some(HbmController::new());
+    }
+    if let Some(ctrl) = lock.as_mut() {
+        ctrl.write_hbm_sync(enabled, max_wait_ms)
+    } else {
+        false
+    }
+}
