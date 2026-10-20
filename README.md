@@ -50,38 +50,38 @@ The entire implementation operates inside the `/vendor` partition. It requires n
 
 ```mermaid
 flowchart TD
-    subgraph System ["Framework (/system & /system_ext)"]
-        SysUI["ColorOS SystemUI\n(OnScreenFingerprintUiMech)"]
-        FpService["FingerprintService\n(system_server)"]
+    subgraph System["Framework (/system and /system_ext)"]
+        SysUI["ColorOS SystemUI<br/>(OnScreenFingerprintUiMech)"]
+        FpService["FingerprintService<br/>(system_server)"]
         PowerMgr["PowerManagerService / DreamManager"]
     end
 
-    subgraph Bridge ["Vendor AIDL Bridge (/vendor/bin/hw/...)"]
-        AidlService["Rust AIDL Service\n(IFingerprint & ISession)"]
-        TouchMon["Touch & Gesture Monitor\n(/dev/input/event*)"]
-        HbmCtrl["HBM Backlight Controller\n(lcm_hbm_state)"]
-        HalWrap["Vendor HAL Wrapper\n(C Dynamic Loader)"]
+    subgraph Bridge["Vendor AIDL Bridge (/vendor/bin/hw)"]
+        AidlService["Rust AIDL Service<br/>(IFingerprint and ISession)"]
+        TouchMon["Touch and Gesture Monitor<br/>(/dev/input/event*)"]
+        HbmCtrl["HBM Backlight Controller<br/>(lcm_hbm_state)"]
+        HalWrap["Vendor HAL Wrapper<br/>(C Dynamic Loader)"]
     end
 
-    subgraph Kernel ["Kernel Drivers (/dev & /sys)"]
-        FtsDriver["FocalTech Touch Driver\n(/dev/input/event4)"]
-        PmicKeys["MediaTek PMIC Keys\n(/dev/input/event0)"]
-        MtkDrm["MediaTek DRM Display\n(card0-DSI-1 / dpms)"]
-        HbmNode["AMOLED LCM HBM Node\n(14013000.dsi/lcm_hbm_state)"]
-        SileadDev["Silead Optical Sensor\n(/dev/silead_fp)"]
+    subgraph Kernel["Kernel Drivers (/dev and /sys)"]
+        FtsDriver["FocalTech Touch Driver<br/>(/dev/input/event4)"]
+        PmicKeys["MediaTek PMIC Keys<br/>(/dev/input/event0)"]
+        MtkDrm["MediaTek DRM Display<br/>(card0-DSI-1 / dpms)"]
+        HbmNode["AMOLED LCM HBM Node<br/>(14013000.dsi/lcm_hbm_state)"]
+        SileadDev["Silead Optical Sensor<br/>(/dev/silead_fp)"]
     end
 
-    FpService <-->|Binder IPC: AIDL IFingerprint| AidlService
-    AidlService -->|Binder Transact 1001: cmd 1201/1202| SysUI
-    FtsDriver -->|Event: KEY 195 / MT ABS| TouchMon
-    TouchMon -->|Screen OFF Only: KEY_POWER| PmicKeys
-    PmicKeys -->|Wake Event| PowerMgr
-    TouchMon -->|Valid FOD Touch| AidlService
-    AidlService -->|Sync Lock & Write| HbmCtrl
-    HbmCtrl -->|Write '1' & Check 0xOK| HbmNode
-    AidlService -->|Dispatch Command| HalWrap
-    HalWrap <-->|ioctl / SPI| SileadDev
-    MtkDrm -.->|Check DPMS On/Off| TouchMon
+    FpService <-->|"Binder IPC: AIDL IFingerprint"| AidlService
+    AidlService -->|"Binder Transact 1001 (cmd 1201/1202)"| SysUI
+    FtsDriver -->|"Touch Event (KEY 195 / MT ABS)"| TouchMon
+    TouchMon -->|"Screen OFF: KEY_POWER"| PmicKeys
+    PmicKeys -->|"Wake Event"| PowerMgr
+    TouchMon -->|"Valid FOD Touch"| AidlService
+    AidlService -->|"Sync Lock and Write"| HbmCtrl
+    HbmCtrl -->|"Write 1 and Check 0xOK"| HbmNode
+    AidlService -->|"Dispatch Command"| HalWrap
+    HalWrap <-->|"ioctl / SPI"| SileadDev
+    MtkDrm -.->|"Check DPMS Status"| TouchMon
 ```
 
 ---
@@ -94,29 +94,29 @@ During normal screen-on conditions, the display pipeline and touch drivers run a
 sequenceDiagram
     autonumber
     actor User as User
-    participant TP as Touchscreen (mtk-tpd)
-    participant UI as ColorOS SystemUI
-    participant Bridge as Vendor FOD Bridge
-    participant HBM as Kernel LCM HBM Node
-    participant Sensor as Vendor Sensor HAL
+    participant TP as "Touchscreen Driver"
+    participant UI as "ColorOS SystemUI"
+    participant Bridge as "Vendor FOD Bridge"
+    participant HBM as "Kernel LCM HBM Node"
+    participant Sensor as "Vendor Sensor HAL"
 
     User->>TP: Places finger over FOD area (540, 2172)
     TP->>UI: Pointer down event
-    UI->>Bridge: onPointerDownWithContext (isAod=false)
+    UI->>Bridge: onPointerDownWithContext (isAod = false)
     Bridge->>Bridge: Validate FOD radius (114px)
-    Bridge->>UI: Binder Transact 1001 (cmd 1201: TouchDown)
+    Bridge->>UI: Binder Transact 1001 (cmd 1201 TouchDown)
     UI->>UI: Render pressed icon animation (500x500 window)
-    Bridge->>HBM: Write '1' to lcm_hbm_state
-    HBM-->>Bridge: Confirm status '0xOK'
-    Bridge->>Sensor: silfp_sync_optic(1) / sync_down
-    Sensor->>Sensor: Expose CMOS & capture frame
+    Bridge->>HBM: Write 1 to lcm_hbm_state
+    HBM-->>Bridge: Confirm status 0xOK
+    Bridge->>Sensor: silfp_sync_optic (sync down)
+    Sensor->>Sensor: Expose CMOS and capture frame
     Sensor-->>Bridge: Match result (fid / auth token)
-    Bridge->>UI: onAuthenticated(fid)
-    Bridge->>HBM: Write '0' to lcm_hbm_state (Disable HBM)
+    Bridge->>UI: onAuthenticated (fid)
+    Bridge->>HBM: Write 0 to lcm_hbm_state (Disable HBM)
     User->>TP: Lifts finger
     TP->>UI: Pointer up event
     UI->>Bridge: onPointerUpWithContext
-    Bridge->>UI: Binder Transact 1001 (cmd 1202: TouchUp)
+    Bridge->>UI: Binder Transact 1001 (cmd 1202 TouchUp)
 ```
 
 ---
@@ -129,29 +129,29 @@ In AOD mode, the AMOLED panel operates in low-power mode (`dpms = On`). Power bu
 sequenceDiagram
     autonumber
     actor User as User
-    participant TP as Touchscreen (FocalTech /dev/input/event4)
-    participant Bridge as Vendor FOD Bridge
-    participant MtkDrm as MediaTek DRM Kernel
-    participant UI as ColorOS SystemUI
-    participant HBM as Kernel LCM HBM Node
-    participant Sensor as Vendor Sensor HAL
+    participant TP as "Touchscreen Driver (event4)"
+    participant Bridge as "Vendor FOD Bridge"
+    participant MtkDrm as "MediaTek DRM Kernel"
+    participant UI as "ColorOS SystemUI"
+    participant HBM as "Kernel LCM HBM Node"
+    participant Sensor as "Vendor Sensor HAL"
 
-    Note over Bridge,MtkDrm: Display in AOD mode (DPMS: On, screen_state: 2)
+    Note over Bridge,MtkDrm: Display in AOD mode (DPMS On, screen_state 2)
     User->>TP: Press FOD area during AOD
-    TP->>Bridge: Event KEY 195 (FOD) + Coordinates (x, y)
+    TP->>Bridge: Event KEY 195 (FOD) with coordinates
     Bridge->>MtkDrm: Read /sys/class/drm/card0-DSI-1/dpms
-    MtkDrm-->>Bridge: Status: 'On' (AOD detected)
+    MtkDrm-->>Bridge: Status On (AOD detected)
     Note over Bridge: Skip wake_display_pipeline (Do NOT send KEY_POWER)
-    Bridge->>Bridge: Acquire wakelock 'oplus_udfps_fod_wake'
-    Bridge->>UI: Binder Transact 1001 (cmd 1201: TouchDown)
+    Bridge->>Bridge: Acquire wakelock oplus_udfps_fod_wake
+    Bridge->>UI: Binder Transact 1001 (cmd 1201 TouchDown)
     UI->>UI: Hide static icon, render pressed icon (500x500)
-    UI->>MtkDrm: requestDisplayPower (DRM transitions Doze -> Active)
-    Bridge->>HBM: set_hbm_sync loop (write '1')
+    UI->>MtkDrm: requestDisplayPower (DRM transitions Doze to Active)
+    Bridge->>HBM: set_hbm_sync loop (write 1)
     HBM-->>Bridge: Confirm active (0xOK received after DRM transition)
     Bridge->>Sensor: Execute optical acquisition
     Sensor-->>Bridge: Authentication SUCCESS
-    Bridge->>HBM: Write '0' to lcm_hbm_state
-    Bridge->>UI: onAuthenticated -> Unlock to Desktop
+    Bridge->>HBM: Write 0 to lcm_hbm_state
+    Bridge->>UI: onAuthenticated (Unlock to Desktop)
     Bridge->>Bridge: Release wakelock
 ```
 
@@ -165,30 +165,30 @@ When the screen is completely powered off (`dpms = Off`), the SoC enters deep sl
 sequenceDiagram
     autonumber
     actor User as User
-    participant TP as Low-Power Gesture IC (event4)
-    participant Bridge as Vendor FOD Bridge
-    participant Pmic as PMIC Keys (event0)
-    participant MtkDrm as MediaTek DRM Kernel
-    participant Framework as Android Framework / System Server
-    participant HBM as Kernel LCM HBM Node
-    participant Sensor as Vendor Sensor HAL
+    participant TP as "Low-Power Gesture IC"
+    participant Bridge as "Vendor FOD Bridge"
+    participant Pmic as "PMIC Keys"
+    participant MtkDrm as "MediaTek DRM Kernel"
+    participant Framework as "Android Framework"
+    participant HBM as "Kernel LCM HBM Node"
+    participant Sensor as "Vendor Sensor HAL"
 
-    Note over Bridge,MtkDrm: Display off (DPMS: Off, CRTC disabled, screen_state: 0)
+    Note over Bridge,MtkDrm: Display off (DPMS Off, CRTC disabled, screen_state 0)
     User->>TP: Touch FOD sensor area
     TP->>Bridge: Gesture pulse interrupt (KEY 195 / 38)
     Bridge->>MtkDrm: Read DPMS state
-    MtkDrm-->>Bridge: Status: 'Off'
-    Bridge->>Pmic: Inject KEY_POWER (116 down + up) to /dev/input/event0
+    MtkDrm-->>Bridge: Status Off
+    Bridge->>Pmic: Inject KEY_POWER (116 down and up) to event0
     Pmic->>Framework: Wake display pipeline (WAKEUP)
-    Bridge->>Bridge: Store pending_auth_capture & hold wakelock
-    Framework->>Bridge: ISession::authenticate(op_id)
+    Bridge->>Bridge: Store pending_auth_capture and hold wakelock
+    Framework->>Bridge: ISession authenticate(op_id)
     Bridge->>Bridge: Fulfill pending capture
-    Bridge->>HBM: set_hbm_sync loop (await display wake & 0xOK)
+    Bridge->>HBM: set_hbm_sync loop (await display wake and 0xOK)
     HBM-->>Bridge: 0xOK
-    Bridge->>Sensor: Capture image & verify biometric data
+    Bridge->>Sensor: Capture image and verify biometric data
     Sensor-->>Bridge: Authentication SUCCESS
-    Bridge->>HBM: Write '0' (Disable HBM)
-    Bridge->>Framework: onAuthenticated -> Wake directly to unlocked desktop
+    Bridge->>HBM: Write 0 (Disable HBM)
+    Bridge->>Framework: onAuthenticated (Wake directly to unlocked desktop)
 ```
 
 ---
@@ -223,12 +223,12 @@ All artifacts install strictly into `/vendor`:
 
 | Module | File | Purpose |
 |---|---|---|
-| **Entrypoint** | [`src/main.rs`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/src/main.rs) | Sets up Binder thread pool, registers the AIDL service with `ServiceManager`, and enforces fallback optical properties (`iconsize=500`, `iconlocation=228`, `iconnumber=0`). |
-| **AIDL Service** | [`src/service.rs`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/src/service.rs) | Implements `IFingerprint` and `ISession`. Handles proprietary ColorOS transactions (cmd 1010 for enrollment steps, cmd 1011 for screen state, cmd 1201/1202 for touch dispatch). |
-| **HAL Wrapper** | [`src/hal.rs`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/src/hal.rs) | Wraps vendor C `fingerprint_device_t` methods via `dlopen`/`dlsym`. Filters non-standard internal vendor codes (1001, 1002, 1020) and manages pending capture queues. |
-| **Input Monitor** | [`src/input.rs`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/src/input.rs) | Reads touch events from `/dev/input/event*`, validates coordinates against the FOD area radius (114px around 540, 2172), and injects `KEY_POWER` only when DPMS is `Off`. |
-| **HBM Controller** | [`src/hbm.rs`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/src/hbm.rs) | Manages AMOLED panel brightness mode via `/sys/devices/platform/soc/14013000.dsi/lcm_hbm_state`. Polls for `0xOK` with a 500ms safety timeout. |
-| **Binary Patcher** | [`patch_libsl_fp.py`](file:///home/rapli/Dokumen/oplusfix/Oplus-Udfps-Bridge-Transsion/patch_libsl_fp.py) | Patches `libsl_fp_impl.so` to eliminate `silfp_cust_wait_ui_ready` latency, bypass blocking ioctl `wait_finger_status`, and adjust enrollment challenge checks. |
+| **Entrypoint** | [src/main.rs](src/main.rs) | Sets up Binder thread pool, registers the AIDL service with `ServiceManager`, and enforces fallback optical properties (`iconsize=500`, `iconlocation=228`, `iconnumber=0`). |
+| **AIDL Service** | [src/service.rs](src/service.rs) | Implements `IFingerprint` and `ISession`. Handles proprietary ColorOS transactions (cmd 1010 for enrollment steps, cmd 1011 for screen state, cmd 1201/1202 for touch dispatch). |
+| **HAL Wrapper** | [src/hal.rs](src/hal.rs) | Wraps vendor C `fingerprint_device_t` methods via `dlopen`/`dlsym`. Filters non-standard internal vendor codes (1001, 1002, 1020) and manages pending capture queues. |
+| **Input Monitor** | [src/input.rs](src/input.rs) | Reads touch events from `/dev/input/event*`, validates coordinates against the FOD area radius (114px around 540, 2172), and injects `KEY_POWER` only when DPMS is `Off`. |
+| **HBM Controller** | [src/hbm.rs](src/hbm.rs) | Manages AMOLED panel brightness mode via `/sys/devices/platform/soc/14013000.dsi/lcm_hbm_state`. Polls for `0xOK` with a 500ms safety timeout. |
+| **Binary Patcher** | [patch_libsl_fp.py](patch_libsl_fp.py) | Patches `libsl_fp_impl.so` to eliminate `silfp_cust_wait_ui_ready` latency, bypass blocking ioctl `wait_finger_status`, and adjust enrollment challenge checks. |
 
 ---
 
