@@ -50,26 +50,6 @@ fn main() -> anyhow::Result<()> {
     // Ensure ColorOS AuthService recognises this sensor as a modern AIDL sensor
     set_system_prop(b"vendor.fingerprint.aidl.support\0", b"1\0");
 
-    // Configure ColorOS optical icon properties for Under-Display Fingerprint (UDFPS).
-    // Ensure iconsize is at least 500 (matching special.prop and the 540x2172 calibrated sensor).
-    // NEVER set iconsize to 0 or iconnumber to "none", as ColorOS SystemUI uses them for
-    // OnScreenFingerprintPressedIcon and aodFingerPrintIconSize; setting them to 0 collapses
-    // the pressed icon window to 0x0 pixel and makes the AOD icon disappear on touch down.
-    let current_iconsize = get_system_prop(b"persist.vendor.fingerprint.optical.iconsize\0", "");
-    if current_iconsize.is_empty() || current_iconsize == "0" {
-        set_system_prop(b"persist.vendor.fingerprint.optical.iconsize\0", b"500\0");
-    }
-
-    let current_iconnumber = get_system_prop(b"persist.vendor.fingerprint.optical.iconnumber\0", "");
-    if current_iconnumber.is_empty() || current_iconnumber == "none" {
-        set_system_prop(b"persist.vendor.fingerprint.optical.iconnumber\0", b"0\0");
-    }
-
-    let current_iconloc = get_system_prop(b"persist.vendor.fingerprint.optical.iconlocation\0", "");
-    if current_iconloc.is_empty() {
-        set_system_prop(b"persist.vendor.fingerprint.optical.iconlocation\0", b"228\0");
-    }
-
     // Ensure ColorOS animations run at platform level 2 (frame-by-frame webp drawables; level 1 requires missing WaterRippleAnimation.coz)
     let anim_lvl = get_system_prop(b"persist.sys.oplus.anim_level\0", "");
     if anim_lvl.is_empty() || anim_lvl == "1" || anim_lvl == "-1" {
