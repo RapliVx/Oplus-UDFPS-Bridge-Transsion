@@ -2,7 +2,7 @@
 
 A native Rust daemon that implements the Android AIDL fingerprint HAL (`android.hardware.biometrics.fingerprint.IFingerprint`) for Transsion devices (Tecno and Infinix on MediaTek Helio G99 / MT6789 / Dimensity platforms) running ported ColorOS 16 / 17 (Android 14+) or custom ROMs.
 
-The entire implementation operates inside the `/vendor` partition. It requires no modifications to `/system` or `/system_ext`.
+The entire implementation operates inside the `/vendor` partition, without requiring modifications to `/system` or `/system_ext`.
 
 ---
 
@@ -40,13 +40,15 @@ The entire implementation operates inside the `/vendor` partition. It requires n
 - **Context-Aware Wake Engine**: Inspects the DRM panel state via `/sys/class/drm/card0-DSI-1/dpms`:
   - When DPMS is `Off` (deep sleep): Injects `KEY_POWER` into `/dev/input/event0` (PMIC keys) to wake the hardware display pipeline.
   - When DPMS is `On` (screen active or AOD): Suppresses power key injection completely. Holds an in-kernel wake lock (`oplus_udfps_fod_wake`) and lets ColorOS SystemUI transition the panel power state without breaking the AOD Dream lifecycle.
-- **Safe Fallback Configuration**: Automatically initialises required optical properties at startup: `iconsize=500`, `iconlocation=228`, and `iconnumber=0`.
+- **Externalized Property Configuration**: Optical dimensions (`iconsize`, `iconlocation`, `iconnumber`), animation level (`persist.sys.oplus.anim_level`), and biometric screen blocking policies (`persist.sys.block.fingerprint`) are decoupled from the compiled binary. They are configured via properties (such as `/vendor/etc/special.prop`), enabling fine-tuning without recompilation.
 
 ---
 
 ## 3. System Diagrams
 
 ### Component Architecture
+
+The bridge links the ColorOS framework, vendor AIDL HAL interface, hardware input drivers, and kernel display nodes:
 
 ```mermaid
 flowchart TD
@@ -88,7 +90,7 @@ flowchart TD
 
 ### Sequence 1: Screen ON Authentication
 
-During normal screen-on conditions, the display pipeline and touch drivers run at full operational power.
+During active display conditions, touchscreen drivers forward touch events directly to ColorOS SystemUI. The bridge synchronizes High Brightness Mode (HBM) with the optical sensor capture without modifying display power states.
 
 ```mermaid
 sequenceDiagram
@@ -123,7 +125,7 @@ sequenceDiagram
 
 ### Sequence 2: Always-On Display (AOD / Doze) Authentication
 
-In AOD mode, the AMOLED panel operates in low-power mode (`dpms = On`). Power button injection is bypassed to keep the AOD dream window intact.
+In AOD mode, the panel runs at lower refresh rates with `dpms = On`. Touch pulses arrive via kernel input `KEY 195`. The bridge suppresses `KEY_POWER` injection to prevent `PowerManagerService` from closing the AOD dream window, acquires a wakelock, dispatches touch events to SystemUI, and activates HBM.
 
 ```mermaid
 sequenceDiagram
@@ -159,7 +161,7 @@ sequenceDiagram
 
 ### Sequence 3: Screen OFF (Deep Sleep) Authentication
 
-When the screen is completely powered off (`dpms = Off`), the SoC enters deep sleep. Low-power gesture pulses from the touch IC prompt a physical power event to resume the display controller.
+When the screen is completely off (`dpms = Off`), the SoC resides in deep sleep. Touch gestures generate a low-power interrupt (`KEY 195`). The bridge detects the `Off` state, injects `KEY_POWER` into `/dev/input/event0` to wake the DRM controller, stages the biometric capture, and enables HBM once the display pipeline resumes.
 
 ```mermaid
 sequenceDiagram
@@ -197,7 +199,7 @@ sequenceDiagram
 
 All artifacts install strictly into `/vendor`:
 
-```
+```text
 /vendor/
 ├── bin/
 │   └── hw/
@@ -223,7 +225,7 @@ All artifacts install strictly into `/vendor`:
 
 | Module | File | Purpose |
 |---|---|---|
-| **Entrypoint** | [src/main.rs](src/main.rs) | Sets up Binder thread pool, registers the AIDL service with `ServiceManager`, and enforces fallback optical properties (`iconsize=500`, `iconlocation=228`, `iconnumber=0`). |
+| **Entrypoint** | [src/main.rs](src/main.rs) | Sets up the Binder thread pool, sets the AIDL support property flag, enables gesture FOD in the kernel driver, and registers the `IFingerprint` AIDL service with `ServiceManager`. |
 | **AIDL Service** | [src/service.rs](src/service.rs) | Implements `IFingerprint` and `ISession`. Handles proprietary ColorOS transactions (cmd 1010 for enrollment steps, cmd 1011 for screen state, cmd 1201/1202 for touch dispatch). |
 | **HAL Wrapper** | [src/hal.rs](src/hal.rs) | Wraps vendor C `fingerprint_device_t` methods via `dlopen`/`dlsym`. Filters non-standard internal vendor codes (1001, 1002, 1020) and manages pending capture queues. |
 | **Input Monitor** | [src/input.rs](src/input.rs) | Reads touch events from `/dev/input/event*`, validates coordinates against the FOD area radius (114px around 540, 2172), and injects `KEY_POWER` only when DPMS is `Off`. |
@@ -234,28 +236,28 @@ All artifacts install strictly into `/vendor`:
 
 ## 6. System Properties
 
-The following system properties configure optical sensor geometry and framework behavior:
+The following system properties configure optical sensor geometry, framework behavior, and UI animation modes. These properties can be placed in `/vendor/etc/special.prop` or system `build.prop` files:
 
 ```properties
-# Enables AIDL HAL detection in ColorOS biometric framework
+# Identifies the HAL as an AIDL interface in ColorOS AuthService
 vendor.fingerprint.aidl.support=1
 
-# Prevents the framework from disabling the touch screen during auth
+# Disables biometrics screen-blocking policy so the AMOLED panel stays on during auth
 persist.sys.block.fingerprint=false
 
-# Dimensions of the pressed icon animation window in pixels (w x h)
-persist.vendor.fingerprint.optical.iconsize=500
+# Dimensions of the pressed icon animation window in pixels (e.g., 200)
+persist.vendor.fingerprint.optical.iconsize=200
 
-# Vertical offset of the optical icon from screen bottom
+# Vertical offset of the optical icon in pixels from the bottom of the screen
 persist.vendor.fingerprint.optical.iconlocation=228
 
-# Physical center coordinates of the sensor (X::Y)
+# Physical center coordinates of the sensor (X::Y format, e.g., 540::2172)
 persist.vendor.fingerprint.optical.sensorlocation=540::2172
 
-# ColorOS pressed animation style index (0 = Default)
-persist.vendor.fingerprint.optical.iconnumber=0
+# Optical animation style index (e.g., 5 = white illumination for Silead)
+persist.vendor.fingerprint.optical.iconnumber=5
 
-# SystemUI animation render mode (2 = Frame-by-frame webp drawables)
+# ColorOS animation render mode (2 = Frame-by-frame WebP drawables, avoids missing .coz vector assets)
 persist.sys.oplus.anim_level=2
 ```
 
