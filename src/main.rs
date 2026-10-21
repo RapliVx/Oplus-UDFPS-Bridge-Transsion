@@ -50,18 +50,6 @@ fn main() -> anyhow::Result<()> {
     // Ensure ColorOS AuthService recognises this sensor as a modern AIDL sensor
     set_system_prop(b"vendor.fingerprint.aidl.support\0", b"1\0");
 
-    // Ensure ColorOS animations run at platform level 2 (frame-by-frame webp drawables; level 1 requires missing WaterRippleAnimation.coz)
-    let anim_lvl = get_system_prop(b"persist.sys.oplus.anim_level\0", "");
-    if anim_lvl.is_empty() || anim_lvl == "1" || anim_lvl == "-1" {
-        set_system_prop(b"persist.sys.oplus.anim_level\0", b"2\0");
-    }
-
-    // Disable ColorOS biometrics screen-on blocking policy.
-    // On Transsion hardware (Helio G99 / MT6789), blockScreenOnByBiometrics keeps the AMOLED panel
-    // completely powered off / black during authentication, causing Silead to capture pure darkness and fail.
-    // Setting this to false allows the display to wake immediately so HBM can illuminate the finger!
-    set_system_prop(b"persist.sys.block.fingerprint\0", b"false\0");
-
     // Ensure gesture FOD is enabled in kernel driver
     oplus_udfps_bridge_transsion::input::ensure_gesture_fod_enabled();
 
