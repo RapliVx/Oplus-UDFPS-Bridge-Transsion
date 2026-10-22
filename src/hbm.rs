@@ -22,6 +22,7 @@ pub struct HbmController {
 }
 
 static GLOBAL_HBM: Mutex<Option<HbmController>> = Mutex::new(None);
+static HBM_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 impl HbmController {
     pub fn new() -> Self {
@@ -77,6 +78,17 @@ impl HbmController {
         let path = self.active_path.as_deref().unwrap_or(HBM_PRIMARY);
 
         if enabled {
+            let gen = HBM_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+
+            // Safety watchdog: guarantees HBM can NEVER remain on for > 800ms
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_millis(800));
+                if HBM_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == gen {
+                    log_warn!("Hardware LCM HBM safety watchdog: forced HBM off after 800ms timeout");
+                    set_hbm(false);
+                }
+            });
+
             let _ = std::fs::create_dir_all(OPLUS_DISPLAY_DIR);
             let _ = std::fs::write(OPLUS_DISPLAY_HBM, b"1\n");
 
@@ -110,12 +122,14 @@ impl HbmController {
                     break;
                 }
 
-                std::thread::sleep(std::time::Duration::from_millis(20));
+                // Fast poll (3ms) for rapid HBM activation synchronized with ColorOS VSYNC frames
+                std::thread::sleep(std::time::Duration::from_millis(3));
             }
 
             self.is_enabled = true;
             false
         } else {
+            HBM_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             self.is_enabled = false;
             let _ = std::fs::write(OPLUS_DISPLAY_HBM, b"0\n");
             let _ = std::fs::write(path, b"0\n");

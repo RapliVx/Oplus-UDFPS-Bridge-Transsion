@@ -223,8 +223,6 @@ pub struct FingerprintHal {
     fn_silfp_worker_screen_state: Option<FnSilfpWorkerScreenState>,
     saved_enroll_fid: AtomicI32,
     step_captured: AtomicBool,
-    pub pending_auth_capture: AtomicBool,
-    pub pending_auth_time: Mutex<std::time::Instant>,
     pub screen_state: AtomicI32,
 }
 
@@ -488,8 +486,6 @@ impl FingerprintHal {
             fn_silfp_worker_screen_state,
             saved_enroll_fid: AtomicI32::new(0),
             step_captured: AtomicBool::new(false),
-            pending_auth_capture: AtomicBool::new(false),
-            pending_auth_time: Mutex::new(std::time::Instant::now()),
             screen_state: AtomicI32::new(1),
         });
 
@@ -665,16 +661,6 @@ impl FingerprintHal {
             let gid = self.current_user_id.load(Ordering::SeqCst) as u32;
             let ret = unsafe { auth_fn(self.device, operation_id, gid) };
             log_info!("authenticate invoked (op_id=0x{:x}, gid={gid}), ret = {}", operation_id, ret);
-
-            // If a screen-off touch occurred while waking the device, fulfill capture immediately!
-            if self.pending_auth_capture.swap(false, Ordering::SeqCst) {
-                let elapsed = self.pending_auth_time.lock().elapsed();
-                if elapsed <= std::time::Duration::from_millis(2000) {
-                    log_info!("Fulfilling pending_auth_capture from sleep/doze/off (elapsed {:?})", elapsed);
-                    self.on_pointer_down(540, 2172, 0.0, 0.0);
-                }
-            }
-
             ret
         } else {
             -1
@@ -699,17 +685,19 @@ impl FingerprintHal {
             log_info!("silfp_worker_screen_state_callback({}) returned {}", vendor_state, ret);
         }
 
+        // Ensure HBM is deactivated and finger state reset across screen transitions
+        crate::hbm::set_hbm(false);
+        self.is_finger_down.store(false, Ordering::SeqCst);
+
         match state {
             0 => {
                 // State 0: fully sleep (Off)
                 log_info!("[SleepState: OFF] Screen reached fully sleep (Off). Arming low-power gesture mode.");
-                crate::hbm::set_hbm(false);
                 crate::input::ensure_gesture_fod_enabled();
             }
             2 => {
                 // State 2: Dozing / Doze (AOD)
                 log_info!("[SleepState: DOZE] Screen reached Dozing/Doze (AOD). Maintaining touch & optical readiness.");
-                crate::hbm::set_hbm(false);
                 crate::input::ensure_gesture_fod_enabled();
                 self.send_custom_cmd(10, 1, 0x10001, 1);
             }
@@ -748,7 +736,6 @@ impl FingerprintHal {
     }
 
     pub fn cancel(&self) {
-        self.pending_auth_capture.store(false, Ordering::SeqCst);
         let _was_down = self.is_finger_down.swap(false, Ordering::SeqCst);
         self.step_captured.store(false, Ordering::SeqCst);
         crate::hbm::set_hbm(false);
@@ -835,13 +822,10 @@ impl FingerprintHal {
         let screen_state = self.get_screen_state();
 
         if !self.is_active() {
-            log_info!(
-                "on_pointer_down received while session inactive (screen_state={}) -> storing pending_auth_capture & notifying framework",
+            log_debug!(
+                "on_pointer_down received while session inactive (screen_state={}) -> ignored",
                 screen_state
             );
-            self.pending_auth_capture.store(true, Ordering::SeqCst);
-            *self.pending_auth_time.lock() = std::time::Instant::now();
-            self.notify_framework_touch(true);
             return;
         }
 
@@ -849,7 +833,6 @@ impl FingerprintHal {
             log_debug!("Duplicate pointer_down ignored");
             return;
         }
-        self.pending_auth_capture.store(false, Ordering::SeqCst);
         self.step_captured.store(false, Ordering::SeqCst);
         log_info!(
             "on_pointer_down at ({}, {}) (screen_state={}) -> activating HBM & optical capture",
@@ -886,8 +869,18 @@ impl FingerprintHal {
             return;
         }
 
-        // Brief settling delay (15ms) for CMOS exposure uniformity
-        std::thread::sleep(std::time::Duration::from_millis(15));
+        // Fast settling delay (5ms) for CMOS exposure uniformity aligned with ColorOS animation flare
+        std::thread::sleep(std::time::Duration::from_millis(5));
+
+        // Re-check if finger was lifted during settling delay
+        if !self.is_finger_down.load(Ordering::SeqCst) {
+            log_info!("Finger lifted during settling delay, aborting capture");
+            crate::hbm::set_hbm(false);
+            if self.get_screen_state() == 0 {
+                crate::input::release_wakelock("oplus_udfps_fod_wake");
+            }
+            return;
+        }
 
         // 5. Wake vendor sensor and start optical capture
         self.send_custom_cmd(10, 1, 0x10001, 1);
@@ -903,11 +896,6 @@ impl FingerprintHal {
     }
 
     pub fn on_pointer_up(&self) {
-        // Only clear pending_auth_capture if the session is currently active.
-        // If inactive (device was sleeping / waking), preserve pending_auth_capture so authenticate() can fulfill it!
-        if self.is_active() {
-            self.pending_auth_capture.store(false, Ordering::SeqCst);
-        }
         let was_down = self.is_finger_down.swap(false, Ordering::SeqCst);
         self.step_captured.store(false, Ordering::SeqCst);
         log_info!("on_pointer_up (was_down={}, is_active={}) -> deactivating HBM", was_down, self.is_active());
@@ -966,7 +954,6 @@ impl FingerprintHal {
                 // when entering homescreen or waiting for finger release!
                 crate::hbm::set_hbm(false);
                 self.is_finger_down.store(false, Ordering::SeqCst);
-                self.pending_auth_capture.store(false, Ordering::SeqCst);
 
                 if fid != 0 {
                     self.is_active.store(false, Ordering::SeqCst);
@@ -1026,7 +1013,6 @@ impl FingerprintHal {
                 // Extinguish HBM backlight for this enroll capture step
                 crate::hbm::set_hbm(false);
                 self.is_finger_down.store(false, Ordering::SeqCst);
-                self.pending_auth_capture.store(false, Ordering::SeqCst);
 
                 let fid = if raw_remaining == 0 {
                     let saved = self.saved_enroll_fid.load(Ordering::SeqCst);
@@ -1074,7 +1060,6 @@ impl FingerprintHal {
             FINGERPRINT_ERROR => {
                 let err_code = unsafe { *(msg.data.as_ptr() as *const i32) };
                 self.is_finger_down.store(false, Ordering::SeqCst);
-                self.pending_auth_capture.store(false, Ordering::SeqCst);
                 crate::hbm::set_hbm(false);
                 self.is_active.store(false, Ordering::SeqCst);
                 self.send_custom_cmd(10, 0, 0x10001, 0);

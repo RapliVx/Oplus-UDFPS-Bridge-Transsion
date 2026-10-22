@@ -19,11 +19,11 @@ pub const ABS_MT_POSITION_Y: u16 = 0x36;
 pub const ABS_MT_TRACKING_ID: u16 = 0x39;
 
 // Calibrated Optical FOD Sensor Location & Touch Target for Transsion Camon 30 Pro (1080x2436)
-// Hardware property persist.vendor.fingerprint.optical.sensorlocation: [540::2172], diameter: 228 (radius: 114)
+// Hardware property persist.vendor.fingerprint.optical.sensorlocation: [540::2172], diameter: 200 (radius: 100)
 pub const FOD_CENTER_X: i32 = 540;
 pub const FOD_CENTER_Y: i32 = 2172;
-pub const FOD_TOUCH_RADIUS: i32 = 140; // 114px sensor radius + 26px thumb margin
-pub const FOD_TOUCH_RADIUS_SQ: i32 = FOD_TOUCH_RADIUS * FOD_TOUCH_RADIUS; // 19600
+pub const FOD_TOUCH_RADIUS: i32 = 100; // Calibrated 100px radius for 200px optical icon
+pub const FOD_TOUCH_RADIUS_SQ: i32 = FOD_TOUCH_RADIUS * FOD_TOUCH_RADIUS; // 10000
 
 #[inline]
 pub fn is_inside_fod_area(x: i32, y: i32) -> bool {
@@ -300,6 +300,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                 let mut is_down = false;
                 let mut last_down_time = std::time::Instant::now();
                 let mut last_rearm_time = std::time::Instant::now();
+                let mut fod_press_start: Option<std::time::Instant> = None;
                 let mut cur_x: i32 = -1;
                 let mut cur_y: i32 = -1;
                 let mut touch_active = false;
@@ -346,6 +347,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 touch_active = false;
                                                 cur_x = -1;
                                                 cur_y = -1;
+                                                fod_press_start = None;
                                                 if is_down {
                                                     log_info!("Tracking ID lifted (-1) -> releasing FOD");
                                                     is_down = false;
@@ -357,69 +359,22 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                             }
                                         }
                                     } else if event.type_ == EV_KEY {
-                                        if event.code == FOD_KEYCODE || event.code == KEY_GESTURE_38 {
+                                        if event.code == FOD_KEYCODE
+                                            || event.code == KEY_GESTURE_38
+                                            || event.code == KEY_F20
+                                            || event.code == KEY_F13
+                                        {
                                             if event.value == 1 {
-                                                let target = if cur_x >= 0 && cur_y >= 0 {
-                                                    Some((cur_x, cur_y))
-                                                } else {
-                                                    get_fts_gesture_point()
-                                                };
-
-                                                match target {
-                                                    Some((tx, ty)) => {
-                                                        if is_inside_fod_area(tx, ty) {
-                                                            // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                            // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                            if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                                wake_display_pipeline();
-                                                            }
-                                                            acquire_wakelock("oplus_udfps_fod_wake");
-                                                            log_info!(
-                                                                "FOD touch detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
-                                                                tx, ty, event.code, hal.get_screen_state()
-                                                            );
-                                                            is_down = true;
-                                                            last_down_time = std::time::Instant::now();
-                                                            hal.on_pointer_down(tx, ty, 0.0, 0.0);
-                                                        } else {
-                                                            log_info!(
-                                                                "FOD touch rejected at ({}, {}): outside calibrated FOD area (KEY {})",
-                                                                tx, ty, event.code
-                                                            );
-                                                        }
-                                                    }
-                                                    None => {
-                                                        log_info!("FOD KEY {} down received, waiting for coordinate in SYN_REPORT", event.code);
-                                                    }
-                                                }
-                                            }
-                                            // NOTE: We deliberately DO NOT cancel FOD on event.value == 0 (KEY up)!
-                                            // The touch controller emits key release almost immediately (~250ms)
-                                            // while the finger remains pressed. Real finger lift is tracked by
-                                            // ABS_MT_TRACKING_ID == -1 and BTN_TOUCH == 0.
-                                        } else if event.code == KEY_F20 || event.code == KEY_F13 {
-                                            if event.value == 1 {
-                                                let target = if cur_x >= 0 && cur_y >= 0 {
-                                                    Some((cur_x, cur_y))
-                                                } else {
-                                                    get_fts_gesture_point()
-                                                };
-                                                if let Some((tx, ty)) = target {
-                                                    if is_inside_fod_area(tx, ty) {
-                                                        // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                        // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                        if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                            wake_display_pipeline();
-                                                        }
-                                                        acquire_wakelock("oplus_udfps_fod_wake");
-                                                        log_info!(
-                                                            "FOD gesture pulse detected in sleep at ({}, {}) (KEY {}, screen_state={}) -> activating HBM and capture",
-                                                            tx, ty, event.code, hal.get_screen_state()
-                                                        );
-                                                        is_down = true;
-                                                        last_down_time = std::time::Instant::now();
-                                                        hal.on_pointer_down(tx, ty, 0.0, 0.0);
-                                                    }
+                                                // If the display panel is completely OFF (deep sleep / DPMS off), wake the display pipeline
+                                                if !crate::hal::FingerprintHal::is_display_dpms_on()
+                                                    || hal.get_screen_state() == 0
+                                                {
+                                                    wake_display_pipeline();
+                                                    acquire_wakelock("oplus_udfps_fod_wake");
+                                                    log_info!(
+                                                        "FOD gesture pulse detected in sleep (KEY {}) -> waking display pipeline",
+                                                        event.code
+                                                    );
                                                 }
                                             }
                                         } else if event.code == BTN_TOUCH {
@@ -429,6 +384,7 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                                 touch_active = false;
                                                 cur_x = -1;
                                                 cur_y = -1;
+                                                fod_press_start = None;
                                                 if is_down {
                                                     log_info!("Touch release (BTN_TOUCH 0) detected -> resetting FOD");
                                                     is_down = false;
@@ -439,20 +395,51 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                                         }
                                     } else if event.type_ == EV_SYN && event.code == 0 {
                                         // SYN_REPORT: Full multi-touch frame synchronized
-                                        // Only trigger when touch coordinate falls precisely inside calibrated FOD area!
-                                        if touch_active && !is_down {
-                                            if is_inside_fod_area(cur_x, cur_y) {
-                                                // Only inject KEY_POWER if the display panel is completely OFF (deep sleep / DPMS off).
-                                                // When DPMS is ON (Awake or AOD/Doze), do NOT inject KEY_POWER as it aborts the AOD dream!
-                                                if !crate::hal::FingerprintHal::is_display_dpms_on() {
-                                                    wake_display_pipeline();
+                                        let screen_state = hal.get_screen_state();
+                                        let is_active = hal.is_active();
+
+                                        // If screen is awake/active (state 1) and no biometric session is active,
+                                        // NEVER intercept touch events! (User is normally using the phone)
+                                        if screen_state == 1 && !is_active {
+                                            if is_down {
+                                                is_down = false;
+                                                fod_press_start = None;
+                                                hal.on_pointer_up();
+                                                release_wakelock("oplus_udfps_fod_wake");
+                                            }
+                                            continue;
+                                        }
+
+                                        // Handle touch tracking inside / outside calibrated FOD target
+                                        if touch_active && cur_x >= 0 && cur_y >= 0 && is_inside_fod_area(cur_x, cur_y) {
+                                            if !is_down {
+                                                match fod_press_start {
+                                                    None => {
+                                                        fod_press_start = Some(std::time::Instant::now());
+                                                    }
+                                                    Some(start) => {
+                                                        // Debounce threshold: 16ms hold required (~2 frames at 120Hz)
+                                                        // Synchronized with ColorOS touch sampling, filtering swipe-throughs while feeling instantaneous
+                                                        if start.elapsed() >= std::time::Duration::from_millis(16) {
+                                                            is_down = true;
+                                                            last_down_time = std::time::Instant::now();
+                                                            log_info!(
+                                                                "FOD touch confirmed at ({}, {}) (screen_state={}, held {:?}) -> activating HBM and capture",
+                                                                cur_x, cur_y, screen_state, start.elapsed()
+                                                            );
+                                                            hal.on_pointer_down(cur_x, cur_y, 0.0, 0.0);
+                                                        }
+                                                    }
                                                 }
-                                                log_info!("FOD touch coordinate confirmed via SYN_REPORT at ({}, {}) -> activating HBM and capture", cur_x, cur_y);
-                                                is_down = true;
-                                                last_down_time = std::time::Instant::now();
-                                                hal.on_pointer_down(cur_x, cur_y, 0.0, 0.0);
-                                            } else if cur_x >= 0 && cur_y >= 0 {
-                                                // Coordinate is outside FOD area: completely ignore!
+                                            }
+                                        } else {
+                                            // Finger is either lifted or moved outside the FOD area!
+                                            fod_press_start = None;
+                                            if is_down {
+                                                log_info!("Finger moved outside FOD area ({}, {}) -> releasing FOD", cur_x, cur_y);
+                                                is_down = false;
+                                                hal.on_pointer_up();
+                                                release_wakelock("oplus_udfps_fod_wake");
                                             }
                                         }
                                     }
@@ -474,10 +461,11 @@ pub fn start_screen_off_touch_monitor(hal: Arc<crate::hal::FingerprintHal>) {
                         break;
                     }
 
-                    // Watchdog: prevent HBM from ever being stuck on (> 1500ms)
-                    if is_down && last_down_time.elapsed() >= std::time::Duration::from_millis(1500) {
-                        log_warn!("Watchdog: FOD touch timed out (1500ms) -> forcing HBM off");
+                    // Watchdog: prevent HBM from ever being stuck on (> 1000ms)
+                    if is_down && last_down_time.elapsed() >= std::time::Duration::from_millis(1000) {
+                        log_warn!("Watchdog: FOD touch timed out (1000ms) -> forcing HBM off");
                         is_down = false;
+                        fod_press_start = None;
                         hal.on_pointer_up();
                         release_wakelock("oplus_udfps_fod_wake");
                     }
