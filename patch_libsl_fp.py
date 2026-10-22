@@ -127,7 +127,7 @@ def patch_libsl_fp(filepath):
 
     # Assemble ARM64 patch:
     # 0x00: stp x29, x30, [sp, #-16]!
-    # 0x04: mov w0, #30000 (30ms sleep for HBM rise)
+    # 0x04: mov w0, #5000 (5ms sleep for optical HBM stabilization aligned with ColorOS animation)
     # 0x08: bl <usleep@plt>
     # 0x0C: mov w0, #0 (SUCCESS)
     # 0x10: ldp x29, x30, [sp], #16
@@ -138,7 +138,7 @@ def patch_libsl_fp(filepath):
 
     patch_bytes = struct.pack('<6I',
         0xa9bf7bfd,
-        0x528ea600,
+        0x52827100,
         bl_insn,
         0x52800000,
         0xa8c17bfd,
