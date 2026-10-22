@@ -504,6 +504,10 @@ impl FingerprintHal {
         self.is_active.load(Ordering::SeqCst)
     }
 
+    pub fn is_finger_down(&self) -> bool {
+        self.is_finger_down.load(Ordering::SeqCst)
+    }
+
     pub fn set_callback(&self, cb: Option<Strong<dyn ISessionCallback>>) {
         let mut guard = self.current_callback.lock();
         *guard = cb;
@@ -872,9 +876,9 @@ impl FingerprintHal {
         // Fast settling delay (5ms) for CMOS exposure uniformity aligned with ColorOS animation flare
         std::thread::sleep(std::time::Duration::from_millis(5));
 
-        // Re-check if finger was lifted during settling delay
-        if !self.is_finger_down.load(Ordering::SeqCst) {
-            log_info!("Finger lifted during settling delay, aborting capture");
+        // Re-check if finger was lifted or session became inactive during settling delay
+        if !self.is_finger_down.load(Ordering::SeqCst) || !self.is_active() {
+            log_info!("Finger lifted or session inactive during settling delay, aborting capture");
             crate::hbm::set_hbm(false);
             if self.get_screen_state() == 0 {
                 crate::input::release_wakelock("oplus_udfps_fod_wake");
